@@ -1,0 +1,368 @@
+---
+title: '<b>PCOSP: Pancreatic Cancer Overall Survival Predictor</b>'
+author: 'Christopher Eeles'
+date: "`r Sys.Date()`"
+output:
+  revealjs::revealjs_presentation:
+    template: bhklab_slide_template.html
+    center: true
+    self_contained: false
+    incremental: true
+    reveal_options:
+        slideNUmber: true
+        previewLinks: true
+---
+
+# **Introduction** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+<style>
+body { background: #E9EDEE }
+</style>
+
+<!--
+## **Who Am I?** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+* Christopher Eeles, a software developer in the Benjmain Haibe-Kains Lab
+  * At Princess Margaret Cancer Center
+  * Part of the University Health Network
+  * In Toronto, ON, Canada
+  * Check out our work at https://bhklab.ca/
+
+
+## **What Do I Do?** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+* Build software tools (mostly R and Python packages) to help researchers and clinicians gain insights from omics data
+* Write automated and reproducible bioinformatics analysis pipelines
+* Design scalable ETL workflows to process raw published omics data into curated data sets and databases
+-->
+
+## **What Are We Discussing Today?** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+* Pancreatic Cancer Adenocarcinoma Tool-Kit ([PDATK](https://bioconductor.org/packages/release/bioc/html/PDATK.html))
+    * A new Bioconductor package, published by our lab earlier this year
+* More specifically, we are going to learn how to train and utilize a Pancreatic Cancer Overall Survival Predictor (PCOSP) model
+* The PCOSP model makes predictions to stratify patients into good or bad prognosis
+    * For this presentation, good means OS >= 365
+* We hope that this tool may be be useful for other researchers and clinicians
+
+<!--
+## **What Prerequisite Knowledge Do You Need?** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+* A basic understanding of R and R programming
+* Familiarity with common Bioconductor classes such as the [`SummarizedExperiment`](https://bioconductor.org/packages/release/bioc/vignettes/SummarizedExperiment/inst/doc/SummarizedExperiment.html)
+* Basic understanding of survival analysis and general statistics
+* Ability to interpret forest plots and ROC curves
+-->
+
+## **Presentation Outline** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+* Replicate part of a study from our lab, Sandhu **et al.** (2019)
+    1. Learn about how to train a PCOSP model from existing data
+        * Specifically, RNA sequencing and/or microarray data with known survival outcomes
+    2. Use the trained model to make risk predictions for new patient cohorts
+    3. Demonstrate how to calculate and visualize model performance stats using independent patient cohorts with known survival outcomes
+* A more complete analysis is available in a [PDATK vignette](https://bioconductor.org/packages/release/bioc/vignettes/PDATK/inst/doc/PCOSP_model_analysis.html), although it only uses a subset of the data
+
+# **Replicating Sandhu *et al.* 2019** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+## **The Publication** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+* Meta-Analysis of 1,200 Transcriptomic Profiles Identifies a Prognostic Model for Pancreatic Ductal Adenocarcinoma
+    * Available at: https://doi.org/10.1200/cci.18.00102
+    * This paper pioneered the PCOSP method
+    * Demonstrated it can match or outperform other published signature based risk prediction models
+
+## **The MetaGxPancreas Dataset** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+* Curated and released as the [MetaGxPancreas](https://bioconductor.org/packages/release/data/experiment/html/MetaGxPancreas.html) Bioconductor data package
+    * Contains 15 published pancreatic cancer patient cohorts
+    * 11 of 15 cohorts have patient survival metadata
+
+## **Install/Load MetaGxPancreas and PDATK** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+```{r deps, eval=FALSE}
+dependencies <- c('MetaGxPancreas', 'PDATK', 'BiocParallel')
+
+for (pkg in dependencies) {
+    if (!require(pkg)) BiocManager::install(pkg)
+    library(pkg, character.only=TRUE)
+}
+```
+
+## **Loading the Datasets** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+```{r loading_pancreas_data, eval=FALSE}
+# NOTE: This will download several GB of data to your 
+#>ExperimentHub Cache
+metaGxPanc <- loadPancreasDatasets()
+pancreasCohorts <- metaGxPanc$SummarizedExperiments
+
+cohortsWithSurvival <- c("ICGCMICRO", "ICGCSEQ", "PCSI", "TCGA", 
+    "KIRBY", "UNC", "CHEN", "COLLISON", "ZHANG", "OUH", "WINTER")
+
+# Fix the names so they match our cohorts
+names(pancreasCohorts) <- gsub('_SumExp', names(pancreasCohorts)
+    
+# Subset to patient cohorts with survival metadata
+pancreasCohortsWithSurv <- 
+    pancreasCohorts[grepl(regexCohorts, names(pancreasCohorts))]
+```
+
+
+## **Creating a `CohortList`** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+```{r create_cohort_list, eval=FALSE}
+# SurvivalExperiment is just a wrapper around SummarizedExperiment
+#>with mandatory survival metadata in colData
+pancreasSurvExps <- lapply(pancreasCohortsWithSurv, 
+    FUN=SurvivalExperiment, survival_time='days_to_death',
+    event_occurred='vital_status')
+
+# A CohortList is just a SimpleList of SurvivalExperiments
+pancreasCohortList <- CohortList(pancreasSurvExps)
+```
+
+## **Split Training and Validation Data** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+```{r subset_and_split_data, eval=FALSE}
+# Find common genes
+commonGenes <- findCommonGenes(pancreasCohortList)
+# subset on a CohortList subsets all items in the List
+cohortList <- subset(pancreasCohortList, subset=commonGenes)
+
+# Train from the ICGC data only
+ICGCcohorts <- grepl('ICGC', names(cohortList))
+ICGCcohortList <- cohortList[ICGCcohorts]
+
+# The remainder of the data will be used for validation
+validationCohortList <- cohortList[!ICGCcohorts]
+
+# Censored patients dropped out of the study before an event occurred
+# NOTE: This function should be renamed dropCensored
+validationCohortList <- dropNotCensored(validationCohortList)
+ICGCcohortList <- dropNotCensored(ICGCcohortList)
+```
+
+## **Split Training and Validation Data** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+```{r common_samples, eval=FALSE}
+# Find common samples between the sequencing and array data from ICGC
+commonSamples <- findCommonSamples(ICGCcohortList)
+
+# split into shared samples for training, the rest for testing
+ICGCtrainCohorts <- subset(ICGCcohortList, select=commonSamples)
+ICGCtestCohorts <- subset(ICGCcohortList, select=commonSamples, 
+    invert=TRUE)
+
+# merge our training cohort test data into the rest of the validation
+#>data
+validationCohortList <- c(ICGCtestCohorts, validationCohortList)
+
+# drop ICGCSEQ from the validation data, because it only has 7 
+#>patients, it breaks downstream code
+validationCohortList <- 
+    validationCohortList[names(validationCohortList) != 'ICGCSEQ']
+```
+
+## **Setup a `PCOSP` Model Object** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+```{r build_pcosp_model, eval=FALSE}
+# Set a seed for a reproducible analysis!
+randomSeed <- 1987
+set.seed(randomSeed)
+
+# Construct a PCOSP model object
+PCOSPmodel <- PCOSP(ICGCtrainCohorts, minDaySurvived=365,
+    randomSeed=randomSeed)
+```
+
+* A PCOSP model is a risk prediction method which uses an ensemble of k-top scoring gene pair binary classifiers to vote on a patients prognosis
+* Supervised learning method that uses survival metadata in training data to learn important prognostic features
+* The PCOSP score is defined as the proportion of binary classifiers which vote 'good' for prognosis
+
+## **Training a `PCOSP` Model** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+```{r train_pcosp_model, eval=FALSE}
+# NOTE: actually running this requires > 32 GB of RAM if you have 
+#>multiple cores try reducing the number of cores in the BiocParallel 
+#>defaults or reverting to SerialParam (especially on Windows)
+trainedPCOSPmodel <- trainModel(PCOSPmodel, numModels=1000, 
+    minAccuracy=0.6)
+```
+
+## **Risk Prediction with a `PCOSP` Model** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+```{r predict_pcosp_model, eval=FALSE}
+PCOSPpredValCohorts <- predictClasses(validationCohortList,
+    model=trainedPCOSPmodel)
+```
+
+* This is how you would make prognostic risk predictions with new data
+    * The first argument to `predictClasses` should be a `SurvivalExperiment` or
+`CohortList`
+    * The second argument should be your trained PCOSP model!
+* If you don't have your own training data, our pre-trained model can be
+downloaded from [here](https://drive.google.com/drive/folders/1E_vztZuUJpck49Vy_zn8v0qVCosFOsNC?usp=sharing)
+
+## **Risk Prediction with a `PCOSP` Model** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+* What if we only have rna sequening or microarray data, without survival metadata?
+    * No problem, we just have to add some fake metadata and risk predictions
+    are still available!
+* We plan to correct this in a future update, so that a `SummarizedExperiment`
+can be used directly
+
+## **Risk Prediction with a `PCOSP` Model** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+```{r include=FALSE, echo=FALSE, message=FALSE, warning=FALSE}
+library(qs)
+library(PDATK)
+trainedPCOSPmodel <- qread('./data/trainedPCOSP.qs')
+validatedPCOSPmodel <- qread('./data/validatedPCOSP.qs')
+```
+
+```{r load_validation, include=FALSE, echo=FALSE}
+validationCohortList <- validationData(validatedPCOSPmodel)
+```
+
+```{r predict_pcosp_model_new_data, message=FALSE}
+sumExp <- as(validationCohortList[['UNC']], 'SummarizedExperiment')
+sumExp
+```
+
+1. Load your data as a `SummarizedExperiment`
+
+## **Risk Prediction with a `PCOSP` Model** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+```{r pred_pcosp_model, message=FALSE}
+colData(sumExp)$survival_time <- 0L
+colData(sumExp)$event_occurred <- 0L
+survExp <- SurvivalExperiment(sumExp)
+survExp
+```
+
+2. Add some fake metadata and convert to a `SurvivalExperiment`
+
+## **Risk Prediction with a `PCOSP` Model** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+````{r risk_pred, message=FALSE, warning=FALSE, results='hide'}
+riskPredictions <- predictClasses(survExp, model=trainedPCOSPmodel)
+colData(riskPredictions)[, c('sample_name', 'PCOSP_prob_good')]
+```
+
+3. Make your risk predictions!
+
+* For our validation calculations, we assume a PCOSP score > 0.5 predicts good prognosis
+    * This is required to ensure we maximize the statistical power of our tests
+* In clinical applicatons, a stricter cut-off may provide more certainty of prognosis
+    * Could be a good follow up study!
+
+## **Risk Prediction with a `PCOSP` Model** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+```{r interactive_table, echo=FALSE, warning=FALSE, message=FALSE}
+library(reactable)
+table_data <- as.data.frame(colData(riskPredictions))[, c('sample_name', 'PCOSP_prob_good')]
+reactable(
+    table_data,
+    columns=list(
+        sample_name=colDef(name='Sample'),
+        PCOSP_prob_good=colDef(name='PCOSP Score', format=colFormat(digits=2))
+    ),
+    defaultPageSize=10, paginationType='simple', striped=TRUE, wrap=FALSE,
+    highlight=TRUE, bordered=TRUE, rownames=FALSE)
+```
+
+## **Risk Prediction with a `PCOSP` Model** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+* To recap, predicting risk for new patient cohorts:
+    1. Load your data as a `SummarizedExperiment`
+    2. Add some fake metadata and convert to a `SurvivalExperiment`
+    3. Make your risk predictions!
+* What to do with the results is the interesting question!
+* Potential for more research:
+    * Applications to other cancer types (PCOSP -> COSP)
+    * Development of target sequencing panel for the PCOSP gene signature
+    * Clinical validation of PCOSP score predictions in prospective cohort
+
+## **Validating a `PCOSP` Model** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+```{r validate_pcosp_model, eval=FALSE}
+validatedPCOSPmodel <- validateModel(trainedPCOSPmodel,
+    valData=PCOSPpredValCohorts)
+```
+
+* This performs external validation using the remaining ICGCMICRO samples, as
+well as the nine remaining independent patient cohorts
+* A `data.table` of performance statistics can be accessed via the `validationStats` PCOSP-method
+* This is the table which is used to generate all subsequent plots
+
+## **Plotting `PCOSP` Model Performance** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+```{r pcosp_forest_plot1, eval=FALSE, echo=TRUE}
+PCOSPdIndexForestPlot <- forestPlot(validatedPCOSPmodel, 
+    stat='log_D_index')
+PCOSPdIndexForestPlot
+```
+
+* D-index is the log2 Hazard ratio, a measure of relative risk
+  * A higher D-index is better, as it represents a larger difference between
+  the good and bad prognosis groups
+  * 0 is the cut-off for better prognosis in the good survival group vs the bad
+
+## **Plotting `PCOSP` Model Performance** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+```{r actual_pcosp_forest_plot1, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+PCOSPdIndexForestPlot <- forestPlot(validatedPCOSPmodel, 
+    stat='log_D_index')
+PCOSPdIndexForestPlot
+```
+
+## **Plotting `PCOSP` Model Performance** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+```{r pcosp_forest_plot2, eval=FALSE, echo=TRUE}
+PCOSPconcIndexForestPlot <- forestPlot(validatedPCOSPmodel, 
+    stat='concordance_index')
+PCOSPconcIndexForestPlot
+```
+
+* Concordance index is a measure of similarity between rankings
+    * In this case, the ranking is based on prognostic risk
+    * The ranking achieved by the PCOSP score is compared to real observed
+    survival data
+    * A concordance index greater than 0.5 indicates better than random performance
+    * A concordance index of 1 indicates identical ranking
+
+## **Plotting `PCOSP` Model Performance** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+```{r actual_pcosp_forest_plot2, eval=TRUE, echo=FALSE}
+PCOSPconcIndexForestPlot <- forestPlot(validatedPCOSPmodel, 
+    stat='concordance_index')
+PCOSPconcIndexForestPlot
+```
+
+## **Plotting `PCOSP` Model Performance** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+```{r pcosp_roc_curves, eval=FALSE, echo=TRUE}
+cohortROCplots <- plotROC(validatedPCOSPmodel, alpha=0.05)
+cohortROCplots
+```
+
+* ROC curves show the performance of a classification model
+* An ideal model would have its curve as far to the top left as possible
+* The `y = x` line represents statistical insignificance, that the model did
+no better than random chance
+
+## **Plotting `PCOSP` Model Performance** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
+
+```{r actual_pcosp_roc_curves, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+cohortROCplots <- plotROC(validatedPCOSPmodel, alpha=0.05)
+cohortROCplots
+```
+
+# Questions?
+
+## References
+1. Michael Zon, Vandana Sandhu and Benjamin
+  Haibe-Kains (2021). MetaGxPancreas:
+  Transcriptomic Pancreatic Cancer Datasets. R
+  package version 1.13.0.
+2. Sandhu V, Labori KJ, Borgida A, Lungu I, Bartlett J, Hafezi-Bakhtiari S, Denroche RE, Jang GH, Pasternack D, Mbaabali F, Watson M, Wilson J, Kure EH, Gallinger S, Haibe-Kains B. Meta-Analysis of 1,200 Transcriptomic Profiles Identifies a Prognostic Model for Pancreatic Ductal Adenocarcinoma. JCO Clin Cancer Inform. 2019 May;3:1-16. doi: 10.1200/CCI.18.00102. PMID: 31070984.
+
