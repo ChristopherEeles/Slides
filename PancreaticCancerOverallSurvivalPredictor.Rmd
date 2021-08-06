@@ -15,6 +15,8 @@ output:
 
 # **Introduction** { data-background='images/bhklogo.png' data-background-size='20%' data-background-position='bottom left'}
 
+* Live HTML slides available [here](https://christophereeles.github.io/presentation_slides/PancreaticCancerOverallSurvivalPredictor.html)
+
 <style>
 body { background: #E9EDEE }
 </style>
